@@ -1,7 +1,7 @@
 package udp_tcp_concurrency.client;
 
 import udp_tcp_concurrency.client.bean.ServerInfo;
-import udp_tcp_concurrency.constants.ByteUtils;
+import udp_tcp_concurrency.utils.ByteUtils;
 import udp_tcp_concurrency.constants.UDPConstants;
 
 import java.io.IOException;

@@ -1,4 +1,4 @@
-package udp_tcp_concurrency.constants;
+package udp_tcp_concurrency.utils;
 
 /**
  * @author imlgw.top
