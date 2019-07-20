@@ -99,6 +99,7 @@ public class TCPClient {
                 do{
                     String str;
                     try {
+                        //注意这里的readLine()是以"\n" 为结束字符的,如果没读到就会一直阻塞
                         str = reader.readLine();
                     } catch (SocketTimeoutException e) {
                         e.printStackTrace();

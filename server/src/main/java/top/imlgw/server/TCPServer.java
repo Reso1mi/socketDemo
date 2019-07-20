@@ -1,11 +1,14 @@
 package top.imlgw.server;
 
 
+import top.imlgw.common.utils.CloseUtils;
 import top.imlgw.server.handle.ClientHandler;
 
 import java.io.IOException;
 import java.net.*;
+import java.nio.channels.*;
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -23,6 +26,9 @@ public class TCPServer implements ClientHandler.ClientHandleCallBack {
     //用于转发客户端信息的线程池
     private final ExecutorService forwardThreadPool;
 
+    private Selector selector;
+
+    private ServerSocketChannel serverChannel;
     //底层好像就是把这个list本身的方法加了synchronized 但是遍历的时候不能保证线程安全
     //private List<ClientHandler> clientHandlerList = Collections.synchronizedList( new ArrayList<>());;
 
@@ -32,7 +38,7 @@ public class TCPServer implements ClientHandler.ClientHandleCallBack {
     public TCPServer(int port) {
         this.tcpServerPort = port;
         //单例线程池
-        forwardThreadPool=Executors.newSingleThreadExecutor();
+        forwardThreadPool = Executors.newSingleThreadExecutor();
     }
 
 
@@ -43,9 +49,18 @@ public class TCPServer implements ClientHandler.ClientHandleCallBack {
      */
     public boolean startTCPServer() {
         try {
-            ClientListen clientListen = new ClientListen(tcpServerPort);
+            selector = Selector.open();
+            ServerSocketChannel serverChannel = ServerSocketChannel.open();
+            this.serverChannel = serverChannel;
+            //设置为非阻塞
+            serverChannel.configureBlocking(false);
+            serverChannel.socket().bind(new InetSocketAddress(tcpServerPort));
+            //注册客户端到达的监听事件
+            serverChannel.register(selector, SelectionKey.OP_ACCEPT);
+            System.out.println("服务端信息" + serverChannel.getLocalAddress());
+            //启动客户端监听
+            ClientListen clientListen = CLIENT_LISTEN = new ClientListen();
             new Thread(clientListen).start();
-            CLIENT_LISTEN = clientListen;
             return true;
         } catch (IOException e) {
             e.printStackTrace();
@@ -60,6 +75,8 @@ public class TCPServer implements ClientHandler.ClientHandleCallBack {
         if (CLIENT_LISTEN != null) {
             CLIENT_LISTEN.stopListen();
         }
+        CloseUtils.close(serverChannel);
+        CloseUtils.close(selector);
         //加锁
         synchronized (TCPServer.this) {
             for (ClientHandler clientHandle : clientHandles) {
@@ -118,11 +135,11 @@ public class TCPServer implements ClientHandler.ClientHandleCallBack {
 
     @Override
     public void onNewMessageArrived(ClientHandler clientHandler, String msg) {
-        System.out.println("Receive from:"+clientHandler.getClientInfo()+" msg:"+msg);
-        forwardThreadPool.submit(()->{
+        System.out.println("Receive from:" + clientHandler.getClientInfo() + " msg:" + msg);
+        forwardThreadPool.submit(() -> {
             for (ClientHandler clientHandle : clientHandles) {
                 //跳过自己
-                if(clientHandle.equals(clientHandler)){
+                if (clientHandle.equals(clientHandler)) {
                     continue;
                 }
                 //对其他客户端发送消息
@@ -135,45 +152,57 @@ public class TCPServer implements ClientHandler.ClientHandleCallBack {
      * 监听客户端的连接，并且交由异步线程去处理客户端
      */
     private class ClientListen implements Runnable {
-        private ServerSocket server;
         private boolean done = false;
 
-        public ClientListen(int port) throws IOException {
-            server = creatServerSocket();
-            initServerSocket(server);
-            //绑定本地端口
-            server.bind(new InetSocketAddress(InetAddress.getLocalHost(), port), 50);
-            System.out.println("服务端信息" + server.getInetAddress() + " port:" + server.getLocalPort());
-        }
 
         public void run() {
+            //转换为局部变量
+            Selector selector = TCPServer.this.selector;
+
             System.out.println("服务器准备就绪");
             //监听客户端的消息
             do {
-                Socket client = null;
                 try {
-                    //阻塞方法,等待获取连接过来的 client
-                    client = server.accept();
-                } catch (IOException e) {
-                    if (!done) {
-                        System.err.println("accept异常:" + e.getMessage());
+                    if (selector.select() == 0) {
+                        //被唤醒wakeUp的就是0
+                        if (done) {
+                            break;
+                        }
+                        continue;
                     }
-                    continue;
-                }
-                //交给异步线程去处理
-                try {
-                    //构建异步线程处理客户端的请求,同时实现CloseNotify接口在自闭的时候移除handle
-                    //这里好像是《观察者模式》
-                    ClientHandler clientHandle = new ClientHandler(client, TCPServer.this);
-                    //读取数据并且打印
-                    clientHandle.read2Print();
-                    synchronized (TCPServer.this) {
-                        //别忘了将handle加到list中不然无法广播
-                        clientHandles.add(clientHandle);
+                    Iterator<SelectionKey> iterator = selector.selectedKeys().iterator();
+                    while (iterator.hasNext()) {
+                        if (done) {
+                            break;
+                        }
+                        SelectionKey key = iterator.next();
+                        //移除当前Key
+                        iterator.remove();
+                        //检查当前key的状态是不是我们关注的 客户端到达状态
+                        if (key.isAcceptable()) {
+                            //就是上面注册用的Channel
+                            ServerSocketChannel serverChannel = (ServerSocketChannel) key.channel();
+                            //一定是非阻塞状态的
+                            SocketChannel clientSocket = serverChannel.accept();
+                            //交给异步线程去处理
+                            try {
+                                //构建异步线程处理客户端,同时实现CloseNotify接口在自闭的时候移除handle
+                                //这里好像是《观察者模式》
+                                ClientHandler clientHandle = new ClientHandler(clientSocket, TCPServer.this);
+                                //读取数据并且打印
+                                clientHandle.read2Print();
+                                synchronized (TCPServer.this) {
+                                    //别忘了将handle加到list中不然无法广播
+                                    clientHandles.add(clientHandle);
+                                }
+                            } catch (IOException e) {
+                                e.printStackTrace();
+                                System.out.println("客户端连接异常" + e.getMessage());
+                            }
+                        }
                     }
                 } catch (IOException e) {
                     e.printStackTrace();
-                    System.out.println("客户端连接异常" + e.getMessage());
                 }
             } while (!done);
             System.out.println("服务端已经关闭");
@@ -182,12 +211,8 @@ public class TCPServer implements ClientHandler.ClientHandleCallBack {
         public void stopListen() {
             //这里是一定会停止监听线程的
             done = true;
-            try {
-                //这个close会使accept报异常然后退出
-                server.close();
-            } catch (IOException e) {
-                e.printStackTrace();
-            }
+            //唤醒当前的阻塞
+            selector.wakeup();
         }
 
     }

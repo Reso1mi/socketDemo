@@ -30,11 +30,11 @@ public class Server {
         BufferedReader reader=new BufferedReader(new InputStreamReader(System.in));
         String str;
         do {
+            //键盘的输入
             str=reader.readLine();
             //发送数据给所有客户端
             tcpServer.boardCast(str);
         } while (!"00bye00".equalsIgnoreCase(str));
-        System.out.println("???"+str);
         ServerProvider.stopUdpServer();
         tcpServer.stopTcpServer();
     }
